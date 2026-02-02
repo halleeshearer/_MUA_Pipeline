@@ -64,5 +64,5 @@ For comprehensive details, theoretical background, and extensive explanations re
 * Shen, X., Finn, E. S., Scheinost, D., Rosenberg, M. D., Chun, M. M., Papademetris, X., & Constable, R. T. (2017). Using connectome-based predictive modeling to predict individual behavior from brain connectivity. *Nature Protocols*, 12(3), 506-518.
 * Byington, N. E., Schatza, J., & He, C. W. (2023). Predicting Individual Differences via Mass Univariate Aggregation: The Predictive Network Response Scale (PNRS).
 ### Software References
-* YaleMRRC. (2016). Connectome-based Predictive Modeling (CPM) [Code repository]. https://github.com/YaleMRRC/CPM
-* DCAN-Labs. (2023). BWAS: Polyneuro Risk Score [Code repository]. https://github.com/DCAN-Labs/BWAS
+* YaleMRRC. Connectome-based Predictive Modeling (CPM) [Code repository]. https://github.com/YaleMRRC/CPM
+* DCAN-Labs. BWAS: Polyneuro Risk Score [Code repository]. https://github.com/DCAN-Labs/BWAS
