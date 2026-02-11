@@ -19,12 +19,12 @@ import warnings
 import time
 
 # Import the custom modules
-from mua_pipeline import FeatureVectorizer, MUA, remove_subjects_with_missing_data, plot_results
+from mua_pipeline import FeatureVectorizer, MUA, preprocess, plot_results
 
 if __name__ == "__main__":
 
     # DATA LOADING SECTION
-    # Replace these strings with your actual file path or data
+    # Replace these strings with your actual data
     functional_connectivity_matrices = 'your_connectivity_data'
     behavioral_measures = 'your_behavioral_data'
 

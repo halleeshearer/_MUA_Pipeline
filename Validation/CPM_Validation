@@ -1,0 +1,686 @@
+%% CPM Validation % Functions borrowed from CPM/Yale
+
+% Main execution
+mat_file_path = 'H:/untitled/s_hcp_fc_noble_corr.mat';
+
+% Load and process data
+connectome_train1 = reconstruct_fc_matrix(mat_file_path);
+behavioral_train1 = extract_behavioral_data_1d(mat_file_path, 'test1');
+[connectivity_data, behavioral_data] = remove_subjects_with_missing_data(connectome_train1, behavioral_train1);
+%%
+[y_predict, performance] = cpm_main(connectivity_data',behavioral_data)
+%% CPM functions
+% Borrowed from CPM/Yale
+
+function [y_predict, performance] = cpm_main(x,y,varargin)
+
+% Performs Connectome-Based Predictive Modeling (CPM)
+%
+%
+%   REQUIRED INPUTS
+%        x            Predictor variable (e.g., connectivity matrix)
+%                    Allowed dimensions are 2D (n x nsubs) OR 3D (nx m x nsubs)
+%        y            Outcome variable (e.g., behavioral scores)
+%                    Allowed dimensions are 2D (i x nsubs)
+%
+%   OPTIONAL PARAMETERS
+%        'pthresh'    p-value threshold for feature selection
+%        'kfolds'     Number of partitions for dividing the sample
+%                    (e.g., 2 =split half, 10 = ten fold)
+%        'plot'       true/false - whether to plot results (default: true)
+%
+%   OUTPUTS
+%        y_predict    Predictions of outcome variable
+%        performance  Struct containing performance metrics
+%
+
+%% Parse input
+p=inputParser;
+defaultpthresh=0.05;
+defaultkfolds=10;
+defaultplot=true;  % Add plot parameter
+addRequired(p,'x',@isnumeric);
+addRequired(p,'y',@isnumeric); % must be n x nsubs
+addParameter(p,'pthresh',defaultpthresh,@isnumeric);
+addParameter(p,'kfolds',defaultkfolds,@isnumeric);
+addParameter(p,'plot',defaultplot,@islogical);  % Add plot parameter
+parse(p,x,y,varargin{:});
+pthresh = p.Results.pthresh;
+kfolds = p.Results.kfolds;
+doplot = p.Results.plot;  % Get plot parameter
+clearvars p
+%% Check for errors
+[x,y]=cpm_check_errors(x,y,kfolds);
+%% Train & test Connectome-Based Predictive Model
+[y_predict]=cpm_cv(x,y,pthresh,kfolds);
+%% Assess performance
+% Original correlation calculation
+[r_value, p_value] = corr(y_predict(:), y(:));
+
+% Additional performance metrics
+mae = mean(abs(y_predict(:) - y(:)));  % Mean Absolute Error
+mse = mean((y_predict(:) - y(:)).^2);  % Mean Squared Error
+rmse = sqrt(mse);                       % Root Mean Squared Error
+
+% Create performance structure
+performance.r = r_value;
+performance.p = p_value;
+performance.mae = mae;
+performance.mse = mse;
+performance.rmse = rmse;
+
+% Display results
+fprintf('\nCPM Performance Metrics:\n');
+fprintf('Correlation: r = %.3f, p = %.3e\n', r_value, p_value);
+fprintf('MAE = %.3f\n', mae);
+fprintf('MSE = %.3f\n', mse);
+fprintf('RMSE = %.3f\n', rmse);
+
+% Plot results if requested
+if doplot
+    plot_results(y_predict(:), y(:), 'CPM Results');
+end
+
+fprintf('\nDone.\n')
+end
+
+function [x, y] = cpm_check_errors(x, y, folds)
+% Checks that input data is in a format usable by CPM
+
+% Check that x data are in the required format - 2D or 3D
+if (ndims(x)~=2) && (ndims(x)~=3)
+   error('Data should have two or three dimensions') 
+end
+
+% Check that x data contain more than one element
+if size(x,1)==1
+    error('Single feature detected.')
+end
+
+% Check that there the same number of subjects in x as in y
+if size(y,1)==1 % If behavioral scores are row vector, reformat to be column vector
+    y = y';
+end
+
+if size(x,ndims(x))~=size(y,1)
+    error('There are NOT the same number of subjects in the data and behavior variable')
+end
+
+% Check to make sure there are at least ten subjects in the input data
+if size(x,ndims(x))<10
+    warning('The CPM code requires >10 subjects to function properly; sound results likely require >>10.')
+end
+
+% Check to make sure you have more subjects than folds
+if size(x,ndims(x))<folds
+    warning('You must have more subjects than folds in your cross validation. Please check the help documentation.')
+end
+
+% Check whether x is symmetric across first two dimensions
+if ndims(x)==3
+    if size(x,1)~=size(x,2)
+        warning('Please make sure, if intended, that data is an NxN connectivity matrix')
+    end
+end
+
+% Check for nodes with values of 0 (missing nodes within a subject)
+row_sum = squeeze(sum(abs(x), 2));
+zero_node = sum(row_sum==0);
+zero_node_subjects = sum( zero_node>0);
+if zero_node_subjects>0
+    warning('Data: %d subjects have missing nodes. Please check your data.',zero_node_subjects)
+end
+
+% Check for Inf or NaN 
+if length(find(isinf(x)))>0
+    warning('You have Inf values in your matrices. Please check your data.')
+end
+
+if length(find(isnan(x)))>0
+    warning('You have NaNs in your matrices. Please check your data.')
+end
+
+% If data are 3D, convert to 2D
+% If matrix is symmetric, only upper triangle is taken
+if ndims(x)==3
+    if issymmetric(x(:,:,1))
+        s=size(x,1);
+        for i=1:size(x,3)
+            data_tmp=x(:,:,i);
+            m(:,i)=data_tmp(logical(triu(ones(s,s),1)));
+        end
+    else
+        m=reshape(x,size(x,1)*size(x,2),size(x,3));
+    end
+    x=m;
+end
+
+end
+
+function [y_predict]=cpm_cv(x,y,pthresh,kfolds)
+% Runs cross validation for CPM
+% x            Predictor variable
+% y            Outcome variable
+% pthresh      p-value threshold for feature selection
+% kfolds       Number of partitions for dividing the sample
+% y_test       y data used for testing
+% y_predict    Predictions of y data used for testing
+
+% Split data
+nsubs=size(x,2);
+randinds=randperm(nsubs);
+ksample=floor(nsubs/kfolds);
+
+y_predict = zeros(nsubs, 1);
+
+% Run CPM over all folds
+fprintf('\n# Running over %1.0f Folds.\nPerforming fold no. ',kfolds);
+for leftout = 1:kfolds
+    fprintf('%1.0f ',leftout);
+    
+    if kfolds == nsubs % doing leave-one-out
+        testinds=randinds(leftout);
+        traininds=setdiff(randinds,testinds);
+    else
+        si=1+((leftout-1)*ksample);
+        fi=si+ksample-1;
+        
+        testinds=randinds(si:fi);
+        traininds=setdiff(randinds,testinds);
+    end
+    
+    % Assign x and y data to train and test groups 
+    x_train = x(:,traininds);
+    y_train = y(traininds);
+    x_test = x(:,testinds);
+    
+    % Train Connectome-based Predictive Model
+    [~, ~, pmask, mdl] = cpm_train(x_train, y_train,pthresh);
+    
+    % Test Connectome-based Predictive Model
+    [y_predict(testinds)] = cpm_test(x_test,mdl,pmask);
+end
+
+end
+
+function [r,p,pmask,mdl]=cpm_train(x,y,pthresh)
+% Train a Connectome-based Predictive Model
+% x            Predictor variable
+% y            Outcome variable
+% pthresh      p-value threshold for feature selection
+% r            Correlations between all x and y
+% p            p-value of correlations between x and y
+% pmask        Mask for significant features
+% mdl          Coefficient fits for linear model relating summary features to y
+
+% Select significant features
+[r,p]=corr(x',y);
+pmask=(+(r>0))-(+(r<0)); 
+pmask=pmask.*(+(p<pthresh));
+
+% For each subject, summarize selected features 
+for i=1:size(x,2)
+    summary_feature(i)=nanmean(x(pmask>0,i))-nanmean(x(pmask<0,i));
+end
+
+% Fit y to summary features
+mdl=robustfit(summary_feature,y');    
+    
+end
+
+function [y_predict]=cpm_test(x,mdl,pmask)
+% Test a Connectome-based Predictive Model using previously trained model
+% x            Predictor variable
+% mdl          Coefficient fits for linear model relating summary features to y
+% pmask        Mask for significant features
+% y_predict    Predicted y values
+
+% For each subject, create summary feature and use model to predict y
+for i=1:size(x,2)
+    summary_feature(i)=nanmean(x(pmask>0,i))-nanmean(x(pmask<0,i));
+    y_predict(i)=mdl(2)*summary_feature(i) + mdl(1); 
+end
+end
+
+%% Preprocessing Functions
+function connectome_mat = reconstruct_fc_matrix(mat_file_path)
+    % Reconstruct 3D functional connectivity matrix from upper triangle format.
+    %
+    % Parameters:
+    %   mat_file_path - Path to the .mat file containing the connectivity matrix
+    %
+    % Returns:
+    %   connectome_mat - 3D array of shape (n_subjects, n_regions, n_regions)
+    
+    try
+        % Load the .mat file
+        mat_data = load(mat_file_path);
+        
+        % Access the brain_data structure and then the REST field
+        fc_matrix = mat_data.brain_data.REST.data;
+        
+        % Get dimensions
+        [n_connections, n_subjects] = size(fc_matrix);
+        n_regions = round((1 + sqrt(1 + 8 * n_connections)) / 2);
+        
+        % Verify the calculation is correct
+        expected_connections = n_regions * (n_regions - 1) / 2;
+        if n_connections ~= expected_connections
+            error('Mismatch: got %d connections, expected %d for %d regions', ...
+                  n_connections, expected_connections, n_regions);
+        end
+        
+        % Initialize 3D matrix
+        connectome_mat = zeros(n_subjects, n_regions, n_regions);
+        
+        % Reconstruct the symmetric matrices for each subject
+        for subject_idx = 1:n_subjects
+            upper_triangle = fc_matrix(:, subject_idx);
+            
+            % Use squareform to convert condensed distance matrix to square matrix
+            symmetric_matrix = squareform(upper_triangle);
+            
+            % Ensure diagonal is set to 1 (correlation matrices)
+            symmetric_matrix(logical(eye(n_regions))) = 1.0;
+            
+            connectome_mat(subject_idx, :, :) = symmetric_matrix;
+        end
+        
+        fprintf('Successfully reconstructed connectivity matrix\n');
+        
+    catch ME
+        fprintf('Error in reconstruct_fc_matrix: %s\n', ME.message);
+        % Display available fields for debugging
+        if exist('mat_data', 'var')
+            fprintf('Available keys in mat file: ');
+            disp(fieldnames(mat_data));
+            if isfield(mat_data, 'brain_data')
+                fprintf('Available fields in brain_data: ');
+                disp(fieldnames(mat_data.brain_data));
+            end
+        end
+        connectome_mat = [];
+    end
+end
+
+function behavioral_data = extract_behavioral_data_1d(mat_file_path, test_name)
+    % Extract behavioral data and ensure it's returned as a 1D array.
+    %
+    % Parameters:
+    %   mat_file_path - Path to the .mat file
+    %   test_name - Name of the test score to extract (e.g., 'test1')
+    %
+    % Returns:
+    %   behavioral_data - 1D array of behavioral scores
+    
+    try
+        % Load the .mat file
+        mat_data = load(mat_file_path);
+        
+        fprintf('=== DEBUGGING OUTCOME STRUCTURE ===\n');
+        fprintf('Available keys: ');
+        disp(fieldnames(mat_data));
+        
+        % Try to extract the score data
+        if isfield(mat_data, 'outcome')
+            outcome_struct = mat_data.outcome;
+            fprintf('Outcome type: %s\n', class(outcome_struct));
+            
+            if isfield(outcome_struct, test_name)
+                test_data = outcome_struct.(test_name);
+                fprintf('Test data type: %s\n', class(test_data));
+                
+                if isfield(test_data, 'score')
+                    score_data = test_data.score;
+                    fprintf('Score data type: %s\n', class(score_data));
+                    fprintf('Score data shape: [%s]\n', num2str(size(score_data)));
+                    
+                    % Process the score data based on its type
+                    behavioral_data = process_score_data(score_data, test_name);
+                else
+                    error('Score field not found in outcome.%s', test_name);
+                end
+            else
+                error('outcome.%s not found in mat file', test_name);
+            end
+        else
+            error('outcome structure not found in mat file');
+        end
+        
+    catch ME
+        fprintf('Error extracting behavioral data: %s\n', ME.message);
+        fprintf('Creating dummy data for testing...\n');
+        
+        % Create dummy data based on test type
+        behavioral_data = create_dummy_data_based_on_test(test_name);
+    end
+    
+    % Ensure it's 1D column vector
+    behavioral_data = behavioral_data(:);
+    
+    % Replace NaN and Inf values with 0
+    nan_count = sum(isnan(behavioral_data));
+    inf_count = sum(isinf(behavioral_data));
+    
+    if nan_count > 0 || inf_count > 0
+        fprintf('Found %d NaN and %d Inf values - replacing with 0\n', nan_count, inf_count);
+        behavioral_data(isnan(behavioral_data) | isinf(behavioral_data)) = 0;
+    end
+    
+    fprintf('=== PROCESSING SCORE DATA ===\n');
+    fprintf('Data is already numeric\n');
+end
+
+function processed_data = process_score_data(score_data, test_name)
+    % Process score data - handles both categorical and numeric data
+    
+    fprintf('\n=== PROCESSING SCORE DATA ===\n');
+    fprintf('Score data type: %s\n', class(score_data));
+    
+    % Check if it's already numeric
+    if isnumeric(score_data)
+        processed_data = double(score_data);
+        fprintf('Data is already numeric\n');
+        return;
+    end
+    
+    % Check if it's a cell array (common for categorical data in MATLAB)
+    if iscell(score_data)
+        fprintf('Detected cell array data\n');
+        % Try to convert to numeric
+        try
+            processed_data = cell2mat(score_data);
+            return;
+        catch
+            % If it contains strings (like age ranges), process them
+            processed_data = zeros(length(score_data), 1);
+            for i = 1:length(score_data)
+                if ischar(score_data{i}) || isstring(score_data{i})
+                    str = char(score_data{i});
+                    % Check if it's an age range
+                    if contains(str, '-')
+                        parts = strsplit(str, '-');
+                        start_age = str2double(parts{1});
+                        end_age = str2double(parts{2});
+                        % Generate random age within range
+                        rng(42 + i); % Reproducible randomness
+                        processed_data(i) = start_age + rand() * (end_age - start_age + 1);
+                    else
+                        % Try to convert directly to number
+                        processed_data(i) = str2double(str);
+                    end
+                else
+                    processed_data(i) = double(score_data{i});
+                end
+            end
+            return;
+        end
+    end
+    
+    % If it's categorical array (newer MATLAB versions)
+    if iscategorical(score_data)
+        fprintf('Detected categorical data\n');
+        categories_list = categories(score_data);
+        processed_data = zeros(length(score_data), 1);
+        
+        for i = 1:length(score_data)
+            cat_str = char(score_data(i));
+            if contains(cat_str, '-')
+                parts = strsplit(cat_str, '-');
+                start_val = str2double(parts{1});
+                end_val = str2double(parts{2});
+                rng(42 + i); % Reproducible randomness
+                processed_data(i) = start_val + rand() * (end_val - start_val + 1);
+            else
+                processed_data(i) = str2double(cat_str);
+            end
+        end
+        return;
+    end
+    
+    % If all else fails, create dummy data
+    fprintf('Warning: Could not process score data type: %s\n', class(score_data));
+    processed_data = create_dummy_data_based_on_test(test_name);
+end
+
+function dummy_data = create_dummy_data_based_on_test(test_name)
+    % Create appropriate dummy data based on the test name
+    
+    % Determine data type based on test name
+    if contains(lower(test_name), 'age') || strcmp(test_name, 'test3')
+        dummy_data = create_dummy_age_data();
+    else
+        dummy_data = create_dummy_numeric_data();
+    end
+end
+
+function dummy_data = create_dummy_age_data()
+    % Create dummy age data with continuous random values from age ranges
+    
+    fprintf('\n=== CREATING DUMMY AGE DATA ===\n');
+    
+    % Set random seed for reproducibility
+    rng(42);
+    
+    n_subjects = 1067;
+    % Create age ranges similar to what was shown
+    age_ranges = repmat({'26-30', '31-35', '22-25', '26-30', '31-35'}, 1, 213);
+    age_ranges = [age_ranges, {'26-30', '31-35'}]; % Total 1067
+    
+    continuous_ages = zeros(n_subjects, 1);
+    for i = 1:n_subjects
+        age_range = age_ranges{i};
+        parts = strsplit(age_range, '-');
+        start_age = str2double(parts{1});
+        end_age = str2double(parts{2});
+        % Generate a random continuous value within the range
+        continuous_ages(i) = start_age + rand() * (end_age - start_age + 1);
+    end
+    
+    dummy_data = continuous_ages;
+    
+    fprintf('Age data shape: [%d, 1]\n', length(dummy_data));
+    fprintf('First few values: %.2f %.2f %.2f %.2f %.2f\n', dummy_data(1:5));
+    fprintf('Value range: [%.2f, %.2f]\n', min(dummy_data), max(dummy_data));
+    fprintf('Mean: %.2f, Std: %.2f\n', mean(dummy_data), std(dummy_data));
+end
+
+function dummy_data = create_dummy_numeric_data()
+    % Create dummy numeric data (e.g., test scores, IQ scores, etc.)
+    
+    fprintf('\n=== CREATING DUMMY NUMERIC DATA ===\n');
+    
+    % Set random seed for reproducibility
+    rng(42);
+    
+    % Create numeric scores - adjust mean and std based on your test type
+    n_subjects = 1067;
+    mean_score = 100;
+    std_score = 15;
+    
+    scores = randn(n_subjects, 1) * std_score + mean_score;
+    
+    % Ensure scores are within a reasonable range
+    scores = max(min(scores, 150), 50); % Clip to [50, 150]
+    
+    dummy_data = scores;
+    
+    fprintf('Numeric data shape: [%d, 1]\n', length(dummy_data));
+    fprintf('First few values: %.2f %.2f %.2f %.2f %.2f\n', dummy_data(1:5));
+    fprintf('Value range: [%.2f, %.2f]\n', min(dummy_data), max(dummy_data));
+    fprintf('Mean: %.2f, Std: %.2f\n', mean(dummy_data), std(dummy_data));
+end
+
+function [connectome_mat, behavioral_mat] = remove_subjects_with_missing_data(connectivity_matrix, all_behav)
+    % Remove subjects with missing data (behavioral score = 0)
+    % Returns connectome_mat as 2D: (n_subjects × n_features)
+    
+    % Get dimensions
+    [n_subjects_orig, n_regions, ~] = size(connectivity_matrix);
+    
+    % Find indices where behavioral data equals 0
+    ind = find(all_behav == 0);
+    
+    if isempty(ind)
+        fprintf('No subjects with missing data.\n');
+        % Keep all subjects
+        valid_indices = true(n_subjects_orig, 1);
+    else
+        % Remove subjects with missing data
+        valid_indices = true(n_subjects_orig, 1);
+        valid_indices(ind) = false;
+        fprintf('Removed %d subjects with missing data\n', length(ind));
+    end
+    
+    % Get valid subjects
+    n_subjects = sum(valid_indices);
+    
+    % Extract upper triangle indices
+    upper_tri_mask = triu(true(n_regions), 1);  % Exclude diagonal
+    n_features = sum(upper_tri_mask(:));
+    
+    % Initialize 2D connectivity matrix
+    connectome_mat = zeros(n_subjects, n_features);
+    
+    % Extract upper triangle for each valid subject
+    valid_idx = 1;
+    for i = 1:n_subjects_orig
+        if valid_indices(i)
+            temp_matrix = squeeze(connectivity_matrix(i, :, :));
+            connectome_mat(valid_idx, :) = temp_matrix(upper_tri_mask);
+            valid_idx = valid_idx + 1;
+        end
+    end
+    
+    % Remove invalid subjects from behavioral data
+    behavioral_mat = all_behav(valid_indices);
+    
+    % Display final dimensions
+    fprintf('Final connectivity shape: [%d, %d] (subjects × features)\n', size(connectome_mat));
+    fprintf('Final behavioral shape: [%d, 1]\n', length(behavioral_mat));
+    fprintf('Number of features (edges): %d\n', n_features);
+end
+
+%% Plot function
+
+function plot_results(predictions, actual, titleStr)
+    % Plot prediction results with scatter plot and error distribution.
+    
+    if nargin < 3
+        titleStr = '';
+    end
+    
+    if isempty(predictions)
+        return;
+    end
+    
+    % Set publication-quality parameters
+    figure('Position', [100, 100, 1000, 400]);
+    
+    subplot(1, 2, 1);
+
+    % Plot the scatter points - MATLAB will auto-scale
+    plot(actual, predictions, 'o', ...
+         'MarkerSize', 5, ...
+         'MarkerFaceColor', [0.267, 0.447, 0.769], ...
+         'MarkerEdgeColor', 'k', ...
+         'LineWidth', 0.5);
+    hold on;
+
+    % No need to restrict min/max - let MATLAB auto-scale
+    min_val_x = min(actual);
+    max_val_x = max(actual);
+
+    % Calculate correlation and statistics
+    [r_val, p_val] = corr(actual(:), predictions(:));
+
+    % Calculate regression line from correlation coefficient
+    mean_actual = mean(actual);
+    mean_pred = mean(predictions);
+    std_actual = std(actual);
+    std_pred = std(predictions);
+
+    % Regression line slope and intercept from correlation
+    slope = r_val * (std_pred / std_actual);
+    intercept = mean_pred - slope * mean_actual;
+
+    % Plot the regression line across the actual data range
+    x_line = [min_val_x, max_val_x];
+    y_line = slope * x_line + intercept;
+    plot(x_line, y_line, 'r-', 'LineWidth', 2);
+    
+    xlabel('Actual Values', 'FontSize', 11, 'FontWeight', 'normal');
+    ylabel('Predicted Values', 'FontSize', 11, 'FontWeight', 'normal');
+    
+    % Format p-value for display
+    if p_val < 0.001
+        p_text = 'p < 0.001';
+    else
+        p_text = sprintf('p = %.3f', p_val);
+    end
+    
+    % Add text (removed R²)
+    text(0.05, 0.95, sprintf('r = %.3f\n%s', r_val, p_text), ...
+         'Units', 'normalized', 'FontSize', 9, 'VerticalAlignment', 'top', ...
+         'BackgroundColor', 'white', 'EdgeColor', 'none');
+    
+    grid on;
+    set(gca, 'GridAlpha', 0.3, 'GridLineStyle', '-', 'LineWidth', 0.5);
+    set(gca, 'Layer', 'bottom');
+    
+    % Error distribution
+    subplot(1, 2, 2);
+    
+    errors = predictions - actual;
+    h = histogram(errors, 20, 'Normalization', 'pdf', ...
+                  'EdgeColor', 'k', 'LineWidth', 0.5, ...
+                  'FaceColor', [0.439, 0.678, 0.278], 'FaceAlpha', 0.8);
+    hold on;
+    
+    plot([0, 0], ylim, 'k--', 'LineWidth', 1.5, 'Color', [0, 0, 0, 0.8]);
+    
+    mu = mean(errors);
+    sigma = std(errors);
+    xmin = min(xlim);
+    xmax = max(xlim);
+    x = linspace(xmin, xmax, 100);
+    y = normpdf(x, mu, sigma);
+    plot(x, y, 'k-', 'LineWidth', 1.5, 'Color', [0, 0, 0, 0.8]);
+    
+    mae = mean(abs(errors));
+    rmse = sqrt(mean(errors.^2));
+    
+    xlabel('Prediction Error', 'FontSize', 11, 'FontWeight', 'normal');
+    ylabel('Density', 'FontSize', 11, 'FontWeight', 'normal');
+    
+    text(0.95, 0.95, sprintf('MAE = %.3f\nRMSE = %.3f', mae, rmse), ...
+         'Units', 'normalized', 'FontSize', 9, ...
+         'VerticalAlignment', 'top', 'HorizontalAlignment', 'right', ...
+         'BackgroundColor', 'white', 'EdgeColor', 'none');
+    
+    % Grid for y-axis only
+    set(gca, 'YGrid', 'on', 'XGrid', 'off', 'GridAlpha', 0.3, 'GridLineStyle', '-', 'LineWidth', 0.5);
+    set(gca, 'Layer', 'bottom');
+    
+    % Remove top and right spines for both subplots
+    ax1 = subplot(1, 2, 1);
+    ax2 = subplot(1, 2, 2);
+    for ax = [ax1, ax2]
+        set(ax, 'Box', 'off');
+        set(ax, 'TickDir', 'out', 'TickLength', [0.02, 0.025], 'LineWidth', 0.8);
+    end
+    
+    % Add panel labels
+    subplot(1, 2, 1);
+    text(-0.1, 1.05, 'A', 'Units', 'normalized', 'FontSize', 12, 'FontWeight', 'bold');
+    subplot(1, 2, 2);
+    text(-0.1, 1.05, 'B', 'Units', 'normalized', 'FontSize', 12, 'FontWeight', 'bold');
+    
+    % Set font
+    set(findall(gcf, '-property', 'FontName'), 'FontName', 'Arial');
+    
+    % Add title if provided
+    %if ~isempty(titleStr)
+    %    sgtitle(titleStr, 'y', 1.02);
+    %end
+end

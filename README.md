@@ -7,25 +7,27 @@ We present a unified, flexible, and accessible configurable pipeline that can be
 ## 2. Installation
 
 ```bash
-git clone https://github.com/FatemehDoshvargar/_MUA_Pipeline.git
-cd _MUA_Pipeline
-```
-
-**Dependencies:**
-```bash
-pip install numpy scipy scikit-learn
+pip install git+https://github.com/FatemehDoshvargar/_MUA_Pipeline.git
 ```
 
 ## 3. Project Structure
 
 ```
 _MUA_Pipeline/
-├── Configurable_Pipeline    # Core classes: FeatureVectorizer and MUA
-├── Preprocessing            # Data format auto-detection and missing data removal
-├── Visualization            # Plotting and visualization utilities
-├── Validation/              # Validation scripts and reference comparisons
-├── main                     # Example usage and entry point
-└── README.md
+├── mua_pipeline/                    # Main package directory
+│   ├── __init__.py                  # Package initialization
+│   ├── core.py                      # Core classes: FeatureVectorizer and MUA
+│   ├── preprocessing.py             # Data format auto-detection and missing data removal
+│   └── visualization.py             # Plotting and visualization utilities
+├── examples/
+│   ├── CPM_PNRS_tutorial.ipynb      # Notebook walkthrough tutorial of CPM and PNRS with MUA
+│   └── example_usage.py             # Example usage of MUA with a python script
+├── validation/                      # Validation scripts and reference comparisons
+│   ├── CPM_Validation.m             # MATLAB CPM validation
+│   └── PNRS_Validation.m            # MATLAB PNRS validation
+├── setup.py                         # Package installation configuration
+├── requirements.txt                 # Python dependencies
+└── README.md                        # This file
 ```
 
 ## 4. The Implementation Details
@@ -80,20 +82,16 @@ The_pipeline = Pipeline([
 
 ## 5. Tutorial: Getting Started
 
+See examples/ directory for specific examples of using the MUA pipeline.
+
 ### 5.1 Importing the Pipeline Components
 
 ```python
-from Configurable_Pipeline import (FeatureVectorizer, MUA)
-from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
+from mua_pipeline import FeatureVectorizer, MUA, preprocess, plot_results
 ```
 
 ### 5.2 Preprocessing Your Data
 Before building a pipeline, you can use the **Preprocessing** module to handle data formatting and missing data removal. The `preprocess` function automatically detects the orientation of your data and converts it to the standard format expected by the pipeline:
-
-```python
-from Preprocessing import preprocess
-```
 
 * **3D connectivity matrices** are converted to `(n_subjects, n_regions, n_regions)` regardless of whether the input is `(n_regions, n_regions, n_subjects)`, `(n_regions, n_subjects, n_regions)`, or already in the standard format.
 * **2D feature matrices** are converted to `(n_subjects, n_features)` even if provided as `(n_features, n_subjects)`.
@@ -122,17 +120,13 @@ The `missing_strategy` parameter controls what counts as missing data:
 | `'inf'` | Inf or -Inf values |
 | `'any'` | Any of the above (default) |
 
+
 ### 5.3 Implementing CPM (Shen et al., 2017)
 CPM uses binary weights, p-value-based feature selection, and splits features into positive and negative networks. A final linear regression maps the two network scores to the behavioral outcome.
 
 ```python
 import numpy as np
 from sklearn.model_selection import cross_val_predict, cross_val_score, KFold
-
-# Preprocess
-clean_connectivity, clean_behavioral, _ = preprocess(
-    connectivity_matrices, behavioral_scores, missing_strategy='any'
-)
 
 # Build the CPM pipeline
 cpm_pipeline = Pipeline([
@@ -162,6 +156,7 @@ r2 = r2_score(behavior, cpm_predictions)
 ```
 
 With `split_by_sign=True`, the MUA transformer outputs two columns — one for the positive network summary and one for the negative network summary. The `LinearRegression()` then fits on these two scores to predict the behavioral outcome.
+
 
 ### 5.4 Implementing PNRS (Byington et al., 2023)
 PNRS uses regression-derived weights, includes all features, and produces a single combined score. The aggregated score is directly used as the prediction, so no downstream regressor is needed.
@@ -196,17 +191,13 @@ r2 = r2_score(behavior, pnrs_predictions)
 The **Visualization** module provides the `plot_results` function for visualizing predicted vs. observed behavioral scores:
 
 ```python
-from Visualization import plot_results
-```
-
-```python
 plot_results(cpm_predictions, behavioral_scores, title="CPM")
 plot_results(pnrs_predictions, behavioral_scores, title="PNRS")
 ```
 
 ## 6. Reference and Documentation
 
-For comprehensive details, theoretical background, and extensive explanations regarding the use and validation of this pipeline, please refer to our full paper:
+For comprehensive details, theoretical background, and extensive explanations regarding the use and validation of this pipeline, please refer to our preprint:
 
 **Mass Univariate Aggregation Methods for Machine Learning in Neuroscience**
 **DOI:** [https://doi.org/10.5281/zenodo.18436701]
