@@ -1,4 +1,6 @@
 # A Configurable Pipeline for Mass Univariate Aggregation (MUA) Methods
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## 1. A Configurable Pipeline for Mass Univariate Aggregation Methods
 
